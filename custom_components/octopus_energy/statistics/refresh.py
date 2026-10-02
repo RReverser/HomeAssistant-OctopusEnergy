@@ -18,6 +18,7 @@ from .cost import async_import_external_statistics_from_cost, get_electricity_co
 from ..electricity import calculate_electricity_consumption_and_cost
 from ..gas import calculate_gas_consumption_and_cost
 from ..coordinators import get_electricity_meter_tariff, get_gas_meter_tariff
+from ..intelligent import adjust_intelligent_rates_from_costs, is_intelligent_product
 
 async def async_refresh_previous_electricity_consumption_data(
   hass: HomeAssistant,
@@ -64,6 +65,12 @@ async def async_refresh_previous_electricity_consumption_data(
 
     consumption_data = await client.async_get_electricity_consumption(mpan, serial_number, period_from, period_to)
     rates = await client.async_get_electricity_rates(tariff.product, tariff.code, is_smart_meter, period_from, period_to)
+
+    # Octopus charges intelligent dispatches outside of the off peak period at the off peak rate. Dispatches are only known for
+    # the last few days, so what Octopus charged is used to tell which periods those were.
+    if is_export == False and is_intelligent_product(tariff.product):
+      costs = await client.async_get_electricity_consumption_costs(account_id, mpan, period_from, period_to)
+      rates = adjust_intelligent_rates_from_costs(rates, costs)
 
     consumption_and_cost = calculate_electricity_consumption_and_cost(
       consumption_data,

@@ -338,6 +338,34 @@ def adjust_intelligent_rates(rates,
     
   return adjusted_rates
 
+def adjust_intelligent_rates_from_costs(rates, costs):
+  """Moves to the off peak rate each rate whose period Octopus charged at the off peak rate. `costs` are what Octopus charged
+  per period, as returned by `async_get_electricity_consumption_costs`. Periods without consumption cannot tell either way, so
+  their rates are kept."""
+  if rates is None or len(rates) < 1:
+    return rates
+
+  off_peak_rate = min(rates, key = lambda x: x["value_inc_vat"])["value_inc_vat"]
+  adjusted_rates = []
+
+  for rate in rates:
+    cost = next((cost for cost in costs if cost["start"] == rate["start"] and cost["end"] == rate["end"]), None)
+    if (rate["value_inc_vat"] != off_peak_rate and cost is not None and cost["consumption"] > 0 and
+        abs(cost["cost"] / cost["consumption"] - off_peak_rate) < abs(cost["cost"] / cost["consumption"] - rate["value_inc_vat"])):
+      _LOGGER.debug(f"Adjusting rate at {rate['start']} from {rate['value_inc_vat']} to {off_peak_rate} as it was charged at the off peak rate")
+      adjusted_rates.append({
+        "start": rate["start"],
+        "end": rate["end"],
+        "tariff_code": rate["tariff_code"],
+        "value_inc_vat": off_peak_rate,
+        "is_capped": rate["is_capped"] if "is_capped" in rate else False,
+        "is_intelligent_adjusted": True
+      })
+    else:
+      adjusted_rates.append(rate)
+
+  return adjusted_rates
+
 def is_in_bump_charge(current_date: datetime, dispatches: list[IntelligentDispatchItem]) -> bool:
   for dispatch in dispatches:
     if (dispatch.start <= current_date and dispatch.end >= current_date):

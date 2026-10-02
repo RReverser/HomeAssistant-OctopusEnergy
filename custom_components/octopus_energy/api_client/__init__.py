@@ -141,6 +141,37 @@ live_consumption_query = '''query {{
 	}}
 }}'''
 
+electricity_consumption_costs_query = '''query {{
+  account(accountNumber: "{account_id}") {{
+    properties {{
+      measurements(
+        first: 100
+        startAt: "{period_from}"
+        endAt: "{period_to}"
+        utilityFilters: [{{ electricityFilters: {{ readingFrequencyType: RAW_INTERVAL, readingDirection: CONSUMPTION, marketSupplyPointId: "{mpan}" }} }}]
+      ) {{
+        edges {{
+          node {{
+            value
+            ... on IntervalMeasurementType {{
+              startAt
+              endAt
+            }}
+            metaData {{
+              statistics {{
+                type
+                costInclTax {{
+                  estimatedAmount
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}'''
+
 intelligent_dispatches_query = '''query {{
   devices(accountNumber: "{account_id}", deviceId: "{device_id}") {{
 		id
@@ -1498,6 +1529,40 @@ class OctopusEnergyApiClient:
       raise TimeoutException()
 
     return None
+
+  async def async_get_electricity_consumption_costs(self, account_id: str, mpan: str, period_from: datetime, period_to: datetime):
+    """Get the consumption of an electricity meter and what Octopus charged for it, per half hour, for a period of at most 100 half hours.
+    Costs are in pence, including VAT."""
+    await self.async_refresh_token()
+
+    try:
+      request_context = "electricity-consumption-costs"
+      client = await self._create_client_session()
+      url = f'{self._base_url}/v1/graphql/'
+      payload = { "query": electricity_consumption_costs_query.format(account_id=account_id,
+                                                                     mpan=mpan,
+                                                                     period_from=period_from.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                                                     period_to=period_to.strftime("%Y-%m-%dT%H:%M:%S%z")) }
+      headers = { "Authorization": f"JWT {self._graphql_token}", integration_context_header: request_context }
+      async with client.post(url, json=payload, headers=headers) as response:
+        response_body = await self.__async_read_response__(response, url)
+
+        costs = []
+        for property in response_body["data"]["account"]["properties"]:
+          for edge in property["measurements"]["edges"]:
+            node = edge["node"]
+            costs.append({
+              "start": as_utc(parse_datetime(node["startAt"])),
+              "end": as_utc(parse_datetime(node["endAt"])),
+              "consumption": float(node["value"]),
+              "cost": float(next(statistic["costInclTax"]["estimatedAmount"] for statistic in node["metaData"]["statistics"] if statistic["type"] == "CONSUMPTION_COST"))
+            })
+
+        return costs
+
+    except TimeoutError:
+      _LOGGER.warning(f'Failed to connect. Timeout of {self._timeout} exceeded.')
+      raise TimeoutException()
 
   async def async_get_electricity_standard_rates(self, product_code: str, tariff_code: str, period_from: datetime, period_to: datetime): 
     """Get the current standard rates"""
